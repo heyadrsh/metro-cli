@@ -72,7 +72,7 @@ If you see `[FAIL]` messages, the API may be blocked on your network.
 .\MetroTube.ps1 -Search "bohemian rhapsody"
 
 # Play your favorites
-.\MetroTube.ps1 -Favorites
+.\MetroTube.ps1 -PlayFavorites
 
 # Resume last session
 .\MetroTube.ps1 -Resume

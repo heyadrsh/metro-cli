@@ -7,20 +7,20 @@
     Zero external dependencies - just run it.
 .PARAMETER Search
     Initial search query to run on startup
-.PARAMETER Favorites
+.PARAMETER PlayFavorites
     Start playing from favorites
 .PARAMETER Resume
     Resume last session (queue and position)
 .EXAMPLE
     .\MetroTube.ps1
     .\MetroTube.ps1 -Search "bohemian rhapsody"
-    .\MetroTube.ps1 -Favorites
+    .\MetroTube.ps1 -PlayFavorites
     .\MetroTube.ps1 -Resume
 #>
 
 param(
     [string]$Search,
-    [switch]$Favorites,
+    [switch]$PlayFavorites,
     [switch]$Resume,
     [switch]$Test
 )
@@ -29,7 +29,7 @@ param(
 
 $script:Config = @{
     AppName = "MetroTube"
-    Version = "1.0.3"
+    Version = "1.0.4"
     BaseUrl = "https://music.youtube.com/youtubei/v1"
     StoragePath = "$env:APPDATA\MetroTube"
 
@@ -1609,7 +1609,7 @@ function Main {
         }
     }
 
-    if ($Favorites) {
+    if ($PlayFavorites) {
         Play-Favorites
     }
 
