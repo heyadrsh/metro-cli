@@ -29,7 +29,7 @@ param(
 
 $script:Config = @{
     AppName = "MetroTube"
-    Version = "1.0.2"
+    Version = "1.0.3"
     BaseUrl = "https://music.youtube.com/youtubei/v1"
     StoragePath = "$env:APPDATA\MetroTube"
 
@@ -64,7 +64,7 @@ $script:Config = @{
 
 $script:State = @{
     CurrentSong = $null
-    Queue = [System.Collections.ArrayList]@()
+    Queue = New-Object System.Collections.ArrayList
     QueueIndex = 0
     IsPlaying = $false
     Volume = 80
@@ -89,9 +89,9 @@ $script:Settings = @{
     autoRecommendations = $true
 }
 
-$script:Favorites = @{ songs = [System.Collections.ArrayList]@() }
-$script:History = @{ songs = [System.Collections.ArrayList]@() }
-$script:Playlists = @{ playlists = [System.Collections.ArrayList]@() }
+$script:Favorites = @{ songs = New-Object System.Collections.ArrayList }
+$script:History = @{ songs = New-Object System.Collections.ArrayList }
+$script:Playlists = @{ playlists = New-Object System.Collections.ArrayList }
 
 #endregion
 
@@ -493,7 +493,7 @@ function Search-Songs {
 
     if (-not $response) { return @() }
 
-    $results = [System.Collections.ArrayList]@()
+    $results = New-Object System.Collections.ArrayList
 
     $contents = $response.contents.tabbedSearchResultsRenderer.tabs[0].tabRenderer.content.sectionListRenderer.contents
 
@@ -581,7 +581,7 @@ function Get-SearchSuggestions {
 
     if (-not $response) { return @() }
 
-    $suggestions = [System.Collections.ArrayList]@()
+    $suggestions = New-Object System.Collections.ArrayList
 
     $contents = $response.contents
     if ($contents) {
@@ -669,7 +669,7 @@ function Get-Recommendations {
 
     if (-not $response) { return @() }
 
-    $recommendations = [System.Collections.ArrayList]@()
+    $recommendations = New-Object System.Collections.ArrayList
 
     $tabs = $response.contents.singleColumnMusicWatchNextResultsRenderer.tabbedRenderer.watchNextTabbedResultsRenderer.tabs
     if (-not $tabs) { return @() }
