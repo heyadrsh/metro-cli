@@ -36,7 +36,7 @@ try {
 
 $script:Config = @{
     AppName = "MetroTube"
-    Version = "1.0.6"
+    Version = "1.0.7"
     BaseUrl = "https://music.youtube.com/youtubei/v1"
     StoragePath = "$env:APPDATA\MetroTube"
 
@@ -391,11 +391,24 @@ function Build-WebContext {
 }
 
 function Build-PlayerContext {
-    return @{
-        client = $script:Config.PlayerClient
+    # Use first client from PlayerClients array for simple requests
+    $client = $script:Config.PlayerClients[0]
+    $ctx = @{
+        client = @{
+            clientName = $client.clientName
+            clientVersion = $client.clientVersion
+            gl = $client.gl
+            hl = $client.hl
+        }
         user = @{ lockedSafetyMode = $false }
         request = @{ useSsl = $true; internalExperimentFlags = @() }
     }
+    if ($client.deviceMake) { $ctx.client.deviceMake = $client.deviceMake }
+    if ($client.deviceModel) { $ctx.client.deviceModel = $client.deviceModel }
+    if ($client.osName) { $ctx.client.osName = $client.osName }
+    if ($client.osVersion) { $ctx.client.osVersion = $client.osVersion }
+    if ($client.androidSdkVersion) { $ctx.client.androidSdkVersion = $client.androidSdkVersion }
+    return $ctx
 }
 
 function Invoke-WebRequest-YTMusic {
@@ -438,9 +451,12 @@ function Invoke-PlayerRequest {
     $fullBody = @{ context = Build-PlayerContext } + $Body
     $jsonBody = $fullBody | ConvertTo-Json -Depth 10 -Compress
 
+    # Use first client's user agent
+    $userAgent = $script:Config.PlayerClients[0].userAgent
+
     $headers = @{
         "Content-Type" = "application/json"
-        "User-Agent" = $script:Config.PlayerUserAgent
+        "User-Agent" = $userAgent
         "Accept" = "application/json"
         "Accept-Language" = "en-US,en;q=0.9"
     }
@@ -485,7 +501,8 @@ function Test-API {
     Write-Host ""
 
     # Test Player API
-    Write-Host "2. Testing Player API (ANDROID_VR client)..." -ForegroundColor Yellow
+    $testClient = $script:Config.PlayerClients[0].name
+    Write-Host "2. Testing Player API ($testClient client)..." -ForegroundColor Yellow
     Write-Host "   Video: Rick Astley - Never Gonna Give You Up" -ForegroundColor Gray
     $playerBody = @{
         videoId = "dQw4w9WgXcQ"
