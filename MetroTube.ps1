@@ -36,14 +36,17 @@ try {
 
 $script:Config = @{
     AppName = "MetroTube"
-    Version = "1.0.7"
+    Version = "1.0.8"
     BaseUrl = "https://music.youtube.com/youtubei/v1"
     StoragePath = "$env:APPDATA\MetroTube"
+    LogPath = "$env:APPDATA\MetroTube\metrotube.log"
+    CachePath = "$env:APPDATA\MetroTube\cache"
 
     # WEB_REMIX client for search (returns YouTube Music format)
     WebClient = @{
         clientName = "WEB_REMIX"
         clientVersion = "1.20240101.01.00"
+        clientId = "67"
         gl = "US"
         hl = "en"
     }
@@ -51,17 +54,10 @@ $script:Config = @{
     # Multiple player clients for fallback (like Metrolist does)
     PlayerClients = @(
         @{
-            name = "TVHTML5_EMBEDDED"
-            clientName = "TVHTML5_SIMPLY_EMBEDDED_PLAYER"
-            clientVersion = "2.0"
-            gl = "US"
-            hl = "en"
-            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
-        },
-        @{
-            name = "ANDROID_VR"
+            name = "ANDROID_VR_1_43"
             clientName = "ANDROID_VR"
-            clientVersion = "1.61.48"
+            clientVersion = "1.43.32"
+            clientId = "28"
             deviceMake = "Oculus"
             deviceModel = "Quest 3"
             osName = "Android"
@@ -69,36 +65,65 @@ $script:Config = @{
             androidSdkVersion = "32"
             gl = "US"
             hl = "en"
-            userAgent = "com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12; Quest 3) gzip"
+            userAgent = "com.google.android.apps.youtube.vr.oculus/1.43.32 (Linux; U; Android 12; en_US; Quest 3; Build/SQ3A.220605.009.A1; Cronet/107.0.5284.2)"
+        },
+        @{
+            name = "ANDROID_VR_1_61"
+            clientName = "ANDROID_VR"
+            clientVersion = "1.61.48"
+            clientId = "28"
+            deviceMake = "Oculus"
+            deviceModel = "Quest 3"
+            osName = "Android"
+            osVersion = "12"
+            androidSdkVersion = "32"
+            gl = "US"
+            hl = "en"
+            userAgent = "com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12; en_US; Quest 3; Build/SQ3A.220605.009.A1; Cronet/132.0.6808.3)"
         },
         @{
             name = "IOS"
             clientName = "IOS"
-            clientVersion = "19.29.1"
+            clientVersion = "21.03.1"
+            clientId = "5"
             deviceMake = "Apple"
             deviceModel = "iPhone16,2"
             osName = "iOS"
-            osVersion = "17.5.1.21F90"
+            osVersion = "18.2.22C152"
             gl = "US"
             hl = "en"
-            userAgent = "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X)"
+            userAgent = "com.google.ios.youtube/21.03.1 (iPhone16,2; U; CPU iOS 18_2 like Mac OS X;)"
         },
         @{
-            name = "ANDROID_MUSIC"
-            clientName = "ANDROID_MUSIC"
-            clientVersion = "7.27.52"
-            androidSdkVersion = "30"
-            osName = "Android"
-            osVersion = "11"
+            name = "IPADOS"
+            clientName = "IOS"
+            clientVersion = "21.03.3"
+            clientId = "5"
+            deviceMake = "Apple"
+            deviceModel = "iPad7,6"
+            osName = "iPadOS"
+            osVersion = "17.7.10.21H450"
             gl = "US"
             hl = "en"
-            userAgent = "com.google.android.apps.youtube.music/7.27.52 (Linux; U; Android 11) gzip"
+            userAgent = "com.google.ios.youtube/21.03.3 (iPad7,6; U; CPU iPadOS 17_7_10 like Mac OS X; en-US)"
+        },
+        @{
+            name = "TVHTML5_EMBEDDED"
+            clientName = "TVHTML5_SIMPLY_EMBEDDED_PLAYER"
+            clientVersion = "2.0"
+            clientId = "85"
+            gl = "US"
+            hl = "en"
+            isEmbedded = $true
+            userAgent = "Mozilla/5.0 (PlayStation; PlayStation 4/12.02) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15"
         }
     )
 
     WebUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-    ItagPriority = @(251, 140, 250, 249)
+    # Windows Media Player is most reliable with M4A/AAC. Keep WebM/Opus as fallback.
+    ItagPriority = @(140, 139, 251, 250, 249)
+    DownloadChunkSize = 1048576
 
     RefreshInterval = 1000
 }
@@ -115,9 +140,11 @@ $script:State = @{
     CurrentView = "player"
     SearchResults = @()
     SearchQuery = ""
+    LastSearchQuery = ""
     IsSearching = $false
     StatusMessage = ""
     Player = $null
+    PlayerBackend = ""
     LastPosition = 0
     VisitorData = $null
 }
@@ -161,6 +188,44 @@ function Write-Color {
     }
 }
 
+function Ensure-StorageDirectory {
+    try {
+        if (-not (Test-Path $script:Config.StoragePath)) {
+            New-Item -ItemType Directory -Path $script:Config.StoragePath -Force | Out-Null
+        }
+        if (-not (Test-Path $script:Config.CachePath)) {
+            New-Item -ItemType Directory -Path $script:Config.CachePath -Force | Out-Null
+        }
+    } catch {
+        # If storage cannot be created, keep the app usable and surface the real error elsewhere.
+    }
+}
+
+function Write-Log {
+    param(
+        [string]$Message,
+        [string]$Level = "INFO",
+        [object]$ErrorRecord = $null
+    )
+
+    try {
+        Ensure-StorageDirectory
+        $timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss.fff")
+        $entry = "$timestamp [$Level] $Message"
+
+        if ($ErrorRecord) {
+            $entry += [Environment]::NewLine + ($ErrorRecord | Out-String)
+            if ($ErrorRecord.ScriptStackTrace) {
+                $entry += [Environment]::NewLine + "Script stack:" + [Environment]::NewLine + $ErrorRecord.ScriptStackTrace
+            }
+        }
+
+        Add-Content -Path $script:Config.LogPath -Value $entry -Encoding UTF8
+    } catch {
+        # Logging must never be the thing that crashes playback.
+    }
+}
+
 function Format-Duration {
     param([int]$Seconds)
 
@@ -176,7 +241,9 @@ function Truncate-String {
         [int]$MaxLength
     )
 
+    if ([string]::IsNullOrEmpty($Text) -or $MaxLength -le 0) { return "" }
     if ($Text.Length -le $MaxLength) { return $Text }
+    if ($MaxLength -le 3) { return $Text.Substring(0, [Math]::Min($Text.Length, $MaxLength)) }
     return $Text.Substring(0, $MaxLength - 3) + "..."
 }
 
@@ -216,14 +283,25 @@ function Get-VolumeBar {
 #region ==================== STORAGE ====================
 
 function Initialize-Storage {
-    if (-not (Test-Path $script:Config.StoragePath)) {
-        New-Item -ItemType Directory -Path $script:Config.StoragePath -Force | Out-Null
-    }
+    Ensure-StorageDirectory
+    Write-Log "MetroTube v$($script:Config.Version) starting"
 }
 
 function Get-StoragePath {
     param([string]$FileName)
     return Join-Path $script:Config.StoragePath $FileName
+}
+
+function Get-CachePath {
+    param(
+        [string]$VideoId,
+        [int]$Itag,
+        [string]$MimeType
+    )
+
+    $extension = if ($MimeType -match "audio/webm") { "webm" } else { "m4a" }
+    $safeId = $VideoId -replace "[^a-zA-Z0-9_-]", "_"
+    return Join-Path $script:Config.CachePath "$safeId-$Itag.$extension"
 }
 
 function Save-JsonFile {
@@ -232,8 +310,13 @@ function Save-JsonFile {
         [object]$Data
     )
 
-    $path = Get-StoragePath $FileName
-    $Data | ConvertTo-Json -Depth 10 | Set-Content -Path $path -Encoding UTF8
+    try {
+        Ensure-StorageDirectory
+        $path = Get-StoragePath $FileName
+        $Data | ConvertTo-Json -Depth 10 | Set-Content -Path $path -Encoding UTF8
+    } catch {
+        Write-Log "Failed to save $FileName" "ERROR" $_
+    }
 }
 
 function Load-JsonFile {
@@ -292,10 +375,19 @@ function Load-History {
 }
 
 function Save-QueueState {
+    $position = 0
+    try {
+        if ($script:State.Player) {
+            $position = Get-PlayerPositionInternal
+        }
+    } catch {
+        Write-Log "Could not read playback position while saving queue" "WARN" $_
+    }
+
     $queueState = @{
         queue = $script:State.Queue
         index = $script:State.QueueIndex
-        position = if ($script:State.Player) { $script:State.Player.controls.currentPosition } else { 0 }
+        position = $position
         repeatMode = $script:State.RepeatMode
         shuffleMode = $script:State.ShuffleMode
         volume = $script:State.Volume
@@ -383,11 +475,22 @@ function Is-Favorite {
 #region ==================== API FUNCTIONS ====================
 
 function Build-WebContext {
-    return @{
-        client = $script:Config.WebClient
+    $ctx = @{
+        client = @{
+            clientName = $script:Config.WebClient.clientName
+            clientVersion = $script:Config.WebClient.clientVersion
+            gl = $script:Config.WebClient.gl
+            hl = $script:Config.WebClient.hl
+        }
         user = @{ lockedSafetyMode = $false }
         request = @{ useSsl = $true; internalExperimentFlags = @() }
     }
+
+    if ($script:State.VisitorData) {
+        $ctx.client.visitorData = $script:State.VisitorData
+    }
+
+    return $ctx
 }
 
 function Build-PlayerContext {
@@ -411,6 +514,50 @@ function Build-PlayerContext {
     return $ctx
 }
 
+function Add-OptionalClientProperties {
+    param(
+        [hashtable]$ClientContext,
+        [hashtable]$Client,
+        [string]$VideoId = $null
+    )
+
+    if ($Client.deviceMake) { $ClientContext.client.deviceMake = $Client.deviceMake }
+    if ($Client.deviceModel) { $ClientContext.client.deviceModel = $Client.deviceModel }
+    if ($Client.osName) { $ClientContext.client.osName = $Client.osName }
+    if ($Client.osVersion) { $ClientContext.client.osVersion = $Client.osVersion }
+    if ($Client.androidSdkVersion) { $ClientContext.client.androidSdkVersion = $Client.androidSdkVersion }
+
+    if ($Client.isEmbedded -and $VideoId) {
+        $ClientContext.thirdParty = @{
+            embedUrl = "https://www.youtube.com/watch?v=$VideoId"
+        }
+    }
+}
+
+function New-YouTubeHeaders {
+    param(
+        [hashtable]$Client,
+        [string]$VisitorData = $null
+    )
+
+    $headers = @{
+        "Accept" = "application/json"
+        "Accept-Language" = "en-US,en;q=0.9"
+        "X-Goog-Api-Format-Version" = "1"
+        "X-YouTube-Client-Name" = $Client.clientId
+        "X-YouTube-Client-Version" = $Client.clientVersion
+        "X-Origin" = "https://music.youtube.com"
+        "Origin" = "https://music.youtube.com"
+        "Referer" = "https://music.youtube.com/"
+    }
+
+    if ($VisitorData) {
+        $headers["X-Goog-Visitor-Id"] = $VisitorData
+    }
+
+    return $headers
+}
+
 function Invoke-WebRequest-YTMusic {
     param(
         [string]$Endpoint,
@@ -419,23 +566,21 @@ function Invoke-WebRequest-YTMusic {
 
     $url = "$($script:Config.BaseUrl)/$Endpoint"
 
-    $fullBody = @{ context = Build-WebContext } + $Body
+    $fullBody = @{ context = (Build-WebContext) } + $Body
     $jsonBody = $fullBody | ConvertTo-Json -Depth 10 -Compress
 
-    $headers = @{
-        "Content-Type" = "application/json"
-        "User-Agent" = $script:Config.WebUserAgent
-        "Accept" = "application/json"
-        "Accept-Language" = "en-US,en;q=0.9"
-        "Referer" = "https://music.youtube.com/"
-        "Origin" = "https://music.youtube.com"
-    }
+    $headers = New-YouTubeHeaders $script:Config.WebClient $script:State.VisitorData
 
     try {
-        $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $jsonBody -ContentType "application/json"
+        $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $jsonBody -ContentType "application/json" -UserAgent $script:Config.WebUserAgent -ErrorAction Stop
+        if ($response.responseContext.visitorData -and -not $script:State.VisitorData) {
+            $script:State.VisitorData = $response.responseContext.visitorData
+            Write-Log "Captured visitorData from $Endpoint response"
+        }
         return $response
     } catch {
         $script:State.StatusMessage = "API Error: $($_.Exception.Message)"
+        Write-Log "WEB_REMIX $Endpoint request failed" "ERROR" $_
         return $null
     }
 }
@@ -448,24 +593,20 @@ function Invoke-PlayerRequest {
 
     $url = "$($script:Config.BaseUrl)/$Endpoint"
 
-    $fullBody = @{ context = Build-PlayerContext } + $Body
+    $fullBody = @{ context = (Build-PlayerContext) } + $Body
     $jsonBody = $fullBody | ConvertTo-Json -Depth 10 -Compress
 
     # Use first client's user agent
     $userAgent = $script:Config.PlayerClients[0].userAgent
 
-    $headers = @{
-        "Content-Type" = "application/json"
-        "User-Agent" = $userAgent
-        "Accept" = "application/json"
-        "Accept-Language" = "en-US,en;q=0.9"
-    }
+    $headers = New-YouTubeHeaders $script:Config.PlayerClients[0] $script:State.VisitorData
 
     try {
-        $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $jsonBody -ContentType "application/json"
+        $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $jsonBody -ContentType "application/json" -UserAgent $userAgent -ErrorAction Stop
         return $response
     } catch {
         $script:State.StatusMessage = "API Error: $($_.Exception.Message)"
+        Write-Log "Player $Endpoint request failed" "ERROR" $_
         return $null
     }
 }
@@ -500,33 +641,35 @@ function Test-API {
 
     Write-Host ""
 
-    # Test Player API
-    $testClient = $script:Config.PlayerClients[0].name
-    Write-Host "2. Testing Player API ($testClient client)..." -ForegroundColor Yellow
+    # Test Player API using the same fallback chain as real playback.
+    Write-Host "2. Testing Player API fallback chain..." -ForegroundColor Yellow
     Write-Host "   Video: Rick Astley - Never Gonna Give You Up" -ForegroundColor Gray
-    $playerBody = @{
-        videoId = "dQw4w9WgXcQ"
-        contentCheckOk = $true
-        racyCheckOk = $true
-    }
-    $playerResponse = Invoke-PlayerRequest "player" $playerBody
+    $stream = Get-StreamUrl "dQw4w9WgXcQ"
 
-    if ($playerResponse) {
-        if ($playerResponse.playabilityStatus.status -eq "OK") {
-            Write-Host "   [OK] Player API works!" -ForegroundColor Green
-            $formats = $playerResponse.streamingData.adaptiveFormats
-            $audioFormats = $formats | Where-Object { $_.mimeType -match "^audio/" -and $_.url }
-            Write-Host "   Found $($audioFormats.Count) audio streams with direct URLs" -ForegroundColor Gray
-            if ($audioFormats.Count -gt 0) {
-                $best = $audioFormats | Sort-Object -Property bitrate -Descending | Select-Object -First 1
-                Write-Host "   Best quality: itag=$($best.itag), bitrate=$($best.bitrate)bps" -ForegroundColor Gray
-            }
-        } else {
-            Write-Host "   [FAIL] Playback status: $($playerResponse.playabilityStatus.status)" -ForegroundColor Red
-            Write-Host "   Reason: $($playerResponse.playabilityStatus.reason)" -ForegroundColor Red
+    if ($stream) {
+        Write-Host "   [OK] Player fallback works!" -ForegroundColor Green
+        Write-Host "   $($script:State.StatusMessage)" -ForegroundColor Gray
+        Write-Host "   Selected stream: itag=$($stream.itag), bitrate=$($stream.bitrate)bps, mime=$($stream.mimeType)" -ForegroundColor Gray
+
+        Write-Host ""
+        Write-Host "3. Testing range download/cache..." -ForegroundColor Yellow
+        $testSong = @{
+            id = "dQw4w9WgXcQ"
+            title = "Never Gonna Give You Up"
+            artist = "Rick Astley"
+        }
+        try {
+            $cacheFile = Save-StreamToCache $testSong $stream $false
+            $cacheSize = (Get-Item $cacheFile).Length
+            Write-Host "   [OK] Cached audio file: $cacheFile" -ForegroundColor Green
+            Write-Host "   Size: $cacheSize bytes" -ForegroundColor Gray
+        } catch {
+            Write-Host "   [FAIL] Cache download failed: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "   See log: $($script:Config.LogPath)" -ForegroundColor Gray
         }
     } else {
-        Write-Host "   [FAIL] Player API failed" -ForegroundColor Red
+        Write-Host "   [FAIL] Player fallback failed" -ForegroundColor Red
+        Write-Host "   See log: $($script:Config.LogPath)" -ForegroundColor Gray
     }
 
     Write-Host ""
@@ -554,7 +697,12 @@ function Search-Songs {
 
     $results = New-Object System.Collections.ArrayList
 
-    $contents = $response.contents.tabbedSearchResultsRenderer.tabs[0].tabRenderer.content.sectionListRenderer.contents
+    try {
+        $contents = $response.contents.tabbedSearchResultsRenderer.tabs[0].tabRenderer.content.sectionListRenderer.contents
+    } catch {
+        Write-Log "Search response format was not recognized" "ERROR" $_
+        return @()
+    }
 
     foreach ($section in $contents) {
         $shelf = $section.musicShelfRenderer
@@ -595,13 +743,15 @@ function Search-Songs {
                     if ($parts.Count -gt 0) { $artist = $parts[0] }
                     if ($parts.Count -gt 1) { $album = $parts[1] }
 
-                    $lastPart = $parts[-1]
-                    if ($lastPart -match "^\d+:\d+") {
-                        $timeParts = $lastPart -split ":"
-                        if ($timeParts.Count -eq 2) {
-                            $duration = [int]$timeParts[0] * 60 + [int]$timeParts[1]
-                        } elseif ($timeParts.Count -eq 3) {
-                            $duration = [int]$timeParts[0] * 3600 + [int]$timeParts[1] * 60 + [int]$timeParts[2]
+                    if ($parts.Count -gt 0) {
+                        $lastPart = $parts[-1]
+                        if ($lastPart -match "^\d+:\d+") {
+                            $timeParts = $lastPart -split ":"
+                            if ($timeParts.Count -eq 2) {
+                                $duration = [int]$timeParts[0] * 60 + [int]$timeParts[1]
+                            } elseif ($timeParts.Count -eq 3) {
+                                $duration = [int]$timeParts[0] * 3600 + [int]$timeParts[1] * 60 + [int]$timeParts[2]
+                            }
                         }
                     }
                 }
@@ -663,6 +813,8 @@ function Get-SearchSuggestions {
 function Get-StreamUrl {
     param([string]$VideoId)
 
+    Write-Log "Resolving stream for videoId=$VideoId"
+
     # Try each player client in order (fallback like Metrolist)
     foreach ($client in $script:Config.PlayerClients) {
         $clientContext = @{
@@ -676,12 +828,7 @@ function Get-StreamUrl {
             request = @{ useSsl = $true; internalExperimentFlags = @() }
         }
 
-        # Add optional client properties
-        if ($client.deviceMake) { $clientContext.client.deviceMake = $client.deviceMake }
-        if ($client.deviceModel) { $clientContext.client.deviceModel = $client.deviceModel }
-        if ($client.osName) { $clientContext.client.osName = $client.osName }
-        if ($client.osVersion) { $clientContext.client.osVersion = $client.osVersion }
-        if ($client.androidSdkVersion) { $clientContext.client.androidSdkVersion = $client.androidSdkVersion }
+        Add-OptionalClientProperties $clientContext $client $VideoId
 
         # Add visitorData if we have it
         if ($script:State.VisitorData) {
@@ -698,24 +845,16 @@ function Get-StreamUrl {
         $jsonBody = $body | ConvertTo-Json -Depth 10 -Compress
         $url = "$($script:Config.BaseUrl)/player"
 
-        $headers = @{
-            "Content-Type" = "application/json"
-            "User-Agent" = $client.userAgent
-            "Accept" = "application/json"
-            "Accept-Language" = "en-US,en;q=0.9"
-        }
-
-        # Add visitorData header if we have it
-        if ($script:State.VisitorData) {
-            $headers["X-Goog-Visitor-Id"] = $script:State.VisitorData
-        }
+        $headers = New-YouTubeHeaders $client $script:State.VisitorData
 
         try {
-            $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $jsonBody -ContentType "application/json"
+            Write-Log "Trying player client $($client.name)"
+            $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $jsonBody -ContentType "application/json" -UserAgent $client.userAgent -ErrorAction Stop
 
             # Store visitorData from response for future requests
             if ($response.responseContext.visitorData -and -not $script:State.VisitorData) {
                 $script:State.VisitorData = $response.responseContext.visitorData
+                Write-Log "Captured visitorData from player response"
             }
 
             if ($response.playabilityStatus.status -eq "OK") {
@@ -729,11 +868,15 @@ function Get-StreamUrl {
                         $format = $audioFormats | Where-Object { $_.itag -eq $itag } | Select-Object -First 1
                         if ($format -and $format.url) {
                             $script:State.StatusMessage = "Playing via $($client.name)"
+                            Write-Log "Selected stream via $($client.name): itag=$($format.itag), bitrate=$($format.bitrate), mime=$($format.mimeType)"
                             return @{
                                 url = $format.url
                                 itag = $format.itag
                                 bitrate = $format.bitrate
                                 mimeType = $format.mimeType
+                                contentLength = $format.contentLength
+                                userAgent = $client.userAgent
+                                clientName = $client.name
                             }
                         }
                     }
@@ -741,23 +884,148 @@ function Get-StreamUrl {
                     $bestFormat = $audioFormats | Sort-Object -Property bitrate -Descending | Select-Object -First 1
                     if ($bestFormat -and $bestFormat.url) {
                         $script:State.StatusMessage = "Playing via $($client.name)"
+                        Write-Log "Selected fallback stream via $($client.name): itag=$($bestFormat.itag), bitrate=$($bestFormat.bitrate), mime=$($bestFormat.mimeType)"
                         return @{
                             url = $bestFormat.url
                             itag = $bestFormat.itag
                             bitrate = $bestFormat.bitrate
                             mimeType = $bestFormat.mimeType
+                            contentLength = $bestFormat.contentLength
+                            userAgent = $client.userAgent
+                            clientName = $client.name
                         }
                     }
                 }
+                Write-Log "Client $($client.name) returned OK but no direct audio URL" "WARN"
+            } else {
+                $status = $response.playabilityStatus.status
+                $reason = $response.playabilityStatus.reason
+                Write-Log "Client $($client.name) failed playability: status=$status reason=$reason" "WARN"
             }
-            # If status not OK, continue to next client
         } catch {
-            # Continue to next client on error
+            Write-Log "Client $($client.name) player request threw" "WARN" $_
         }
     }
 
     $script:State.StatusMessage = "Error: All player clients failed"
+    Write-Log "All player clients failed for videoId=$VideoId" "ERROR"
     return $null
+}
+
+function Get-ContentLengthFromUrl {
+    param([string]$Url)
+
+    try {
+        if ($Url -match "(?:\?|&)clen=(\d+)") {
+            return [int64]$matches[1]
+        }
+    } catch {
+        Write-Log "Could not parse clen from stream URL" "WARN" $_
+    }
+
+    return 0
+}
+
+function Copy-HttpRangeToFile {
+    param(
+        [string]$Url,
+        [string]$Path,
+        [int64]$Start,
+        [int64]$End,
+        [string]$UserAgent
+    )
+
+    $request = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create($Url)
+    $request.Method = "GET"
+    $request.UserAgent = $UserAgent
+    $request.AddRange([int]$Start, [int]$End)
+    $request.Headers["Accept-Language"] = "en-US,en;q=0.9"
+    $request.Proxy = [System.Net.WebRequest]::DefaultWebProxy
+    $request.Timeout = 30000
+    $request.ReadWriteTimeout = 30000
+
+    $response = $null
+    $inputStream = $null
+    $outputStream = $null
+
+    try {
+        $response = $request.GetResponse()
+        $statusCode = [int]$response.StatusCode
+        if ($statusCode -ne 206 -and $statusCode -ne 200) {
+            throw "Unexpected HTTP status $statusCode while downloading range $Start-$End"
+        }
+
+        $inputStream = $response.GetResponseStream()
+        $outputStream = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+        $inputStream.CopyTo($outputStream)
+    } finally {
+        if ($outputStream) { $outputStream.Dispose() }
+        if ($inputStream) { $inputStream.Dispose() }
+        if ($response) { $response.Close() }
+    }
+}
+
+function Save-StreamToCache {
+    param(
+        [object]$Song,
+        [hashtable]$Stream,
+        [bool]$ShowProgress = $true
+    )
+
+    Ensure-StorageDirectory
+    $cachePath = Get-CachePath $Song.id $Stream.itag $Stream.mimeType
+
+    $expectedLength = 0
+    if ($Stream.contentLength) {
+        try { $expectedLength = [int64]$Stream.contentLength } catch { $expectedLength = 0 }
+    }
+    if ($expectedLength -le 0) {
+        $expectedLength = Get-ContentLengthFromUrl $Stream.url
+    }
+
+    if ((Test-Path $cachePath) -and $expectedLength -gt 0) {
+        $existingLength = (Get-Item $cachePath).Length
+        if ($existingLength -eq $expectedLength) {
+            Write-Log "Using cached audio file: $cachePath"
+            return $cachePath
+        }
+    }
+
+    if (Test-Path $cachePath) {
+        Remove-Item $cachePath -Force -ErrorAction SilentlyContinue
+    }
+
+    if ($expectedLength -le 0) {
+        throw "Could not determine stream content length"
+    }
+
+    $script:State.StatusMessage = "Downloading audio..."
+    if ($ShowProgress) {
+        try { Render-UI } catch { Write-Log "Render failed while downloading audio" "WARN" $_ }
+    }
+
+    Write-Log "Downloading stream to cache: path=$cachePath, bytes=$expectedLength, chunkSize=$($script:Config.DownloadChunkSize)"
+
+    $start = [int64]0
+    while ($start -lt $expectedLength) {
+        $end = [Math]::Min($start + [int64]$script:Config.DownloadChunkSize - 1, $expectedLength - 1)
+        Copy-HttpRangeToFile $Stream.url $cachePath $start $end $Stream.userAgent
+        $start = $end + 1
+
+        $percent = [Math]::Floor(($start / $expectedLength) * 100)
+        $script:State.StatusMessage = "Downloading audio... $percent%"
+        if ($ShowProgress) {
+            try { Render-UI } catch { }
+        }
+    }
+
+    $actualLength = (Get-Item $cachePath).Length
+    if ($actualLength -ne $expectedLength) {
+        throw "Cached file size mismatch. Expected $expectedLength bytes, got $actualLength bytes"
+    }
+
+    Write-Log "Cached audio file complete: $cachePath"
+    return $cachePath
 }
 
 function Get-Recommendations {
@@ -856,12 +1124,154 @@ function Get-Recommendations {
 
 function Initialize-Player {
     try {
+        Add-Type -AssemblyName PresentationCore -ErrorAction Stop
+        $script:State.Player = New-Object System.Windows.Media.MediaPlayer
+        $script:State.PlayerBackend = "WPF"
+        Set-PlayerVolumeInternal $script:State.Volume
+        Write-Log "WPF MediaPlayer initialized"
+        return $true
+    } catch {
+        Write-Log "WPF MediaPlayer initialization failed; trying Windows Media Player COM" "WARN" $_
+    }
+
+    try {
         $script:State.Player = New-Object -ComObject WMPlayer.OCX
-        $script:State.Player.settings.volume = $script:State.Volume
+        $script:State.PlayerBackend = "WMP"
+        Set-PlayerVolumeInternal $script:State.Volume
+        Write-Log "Windows Media Player COM initialized"
         return $true
     } catch {
         $script:State.StatusMessage = "Failed to initialize audio player"
+        Write-Log "All audio player backends failed" "ERROR" $_
         return $false
+    }
+}
+
+function Set-PlayerVolumeInternal {
+    param([int]$Volume)
+
+    if (-not $script:State.Player) { return }
+
+    try {
+        if ($script:State.PlayerBackend -eq "WPF") {
+            $script:State.Player.Volume = [Math]::Max(0, [Math]::Min(1, $Volume / 100))
+        } else {
+            $script:State.Player.settings.volume = $Volume
+        }
+    } catch {
+        Write-Log "Failed to set player volume" "WARN" $_
+    }
+}
+
+function Open-PlayerUrlInternal {
+    param([string]$Url)
+
+    if ($script:State.PlayerBackend -eq "WPF") {
+        $sourceUri = if (Test-Path $Url) {
+            New-Object System.Uri((Resolve-Path $Url).ProviderPath)
+        } else {
+            New-Object System.Uri($Url)
+        }
+        $script:State.Player.Open($sourceUri)
+        $script:State.Player.Play()
+    } else {
+        $script:State.Player.URL = if (Test-Path $Url) { (Resolve-Path $Url).ProviderPath } else { $Url }
+        $script:State.Player.controls.play()
+    }
+}
+
+function Play-PlayerInternal {
+    if (-not $script:State.Player) { return }
+
+    try {
+        if ($script:State.PlayerBackend -eq "WPF") {
+            $script:State.Player.Play()
+        } else {
+            $script:State.Player.controls.play()
+        }
+    } catch {
+        Write-Log "Failed to resume player" "WARN" $_
+    }
+}
+
+function Pause-PlayerInternal {
+    if (-not $script:State.Player) { return }
+
+    try {
+        if ($script:State.PlayerBackend -eq "WPF") {
+            $script:State.Player.Pause()
+        } else {
+            $script:State.Player.controls.pause()
+        }
+    } catch {
+        Write-Log "Failed to pause player" "WARN" $_
+    }
+}
+
+function Stop-PlayerInternal {
+    if (-not $script:State.Player) { return }
+
+    try {
+        if ($script:State.PlayerBackend -eq "WPF") {
+            $script:State.Player.Stop()
+        } else {
+            $script:State.Player.controls.stop()
+        }
+    } catch {
+        Write-Log "Failed to stop player backend" "WARN" $_
+    }
+}
+
+function Get-PlayerPositionInternal {
+    if (-not $script:State.Player) { return 0 }
+
+    try {
+        if ($script:State.PlayerBackend -eq "WPF") {
+            return [int]$script:State.Player.Position.TotalSeconds
+        }
+
+        return $script:State.Player.controls.currentPosition
+    } catch {
+        Write-Log "Failed to read player position" "WARN" $_
+        return 0
+    }
+}
+
+function Set-PlayerPositionInternal {
+    param([double]$Seconds)
+
+    if (-not $script:State.Player) { return }
+
+    try {
+        if ($script:State.PlayerBackend -eq "WPF") {
+            $script:State.Player.Position = [TimeSpan]::FromSeconds($Seconds)
+        } else {
+            $script:State.Player.controls.currentPosition = $Seconds
+        }
+    } catch {
+        Write-Log "Failed to set player position" "WARN" $_
+    }
+}
+
+function Get-PlayerDurationInternal {
+    if (-not $script:State.Player) { return 0 }
+
+    try {
+        if ($script:State.PlayerBackend -eq "WPF") {
+            if ($script:State.Player.NaturalDuration.HasTimeSpan) {
+                return [int]$script:State.Player.NaturalDuration.TimeSpan.TotalSeconds
+            }
+            return 0
+        }
+
+        if ($script:State.Player.currentMedia) {
+            return $script:State.Player.currentMedia.duration
+        }
+
+        return 0
+    } catch {
+        Write-Log "Failed to read player duration" "WARN" $_
+        return 0
     }
 }
 
@@ -871,30 +1281,74 @@ function Start-Playback {
     if (-not $Song) { return $false }
 
     $script:State.StatusMessage = "Loading: $($Song.title)..."
-    Render-UI
+    Write-Log "Starting playback: title=$($Song.title), artist=$($Song.artist), id=$($Song.id)"
+    try { Render-UI } catch { Write-Log "Render failed while starting playback" "WARN" $_ }
 
     $stream = Get-StreamUrl $Song.id
-    if (-not $stream) { return $false }
+    if (-not $stream) {
+        Write-Log "No stream returned for $($Song.id)" "ERROR"
+        return $false
+    }
+
+    if (-not $script:State.Player) {
+        if (-not (Initialize-Player)) {
+            return $false
+        }
+    }
 
     try {
-        $script:State.Player.URL = $stream.url
-        $script:State.Player.controls.play()
+        $playbackSource = Save-StreamToCache $Song $stream
+    } catch {
+        $script:State.StatusMessage = "Download error: $($_.Exception.Message)"
+        Write-Log "Failed to download stream before playback" "ERROR" $_
+        return $false
+    }
+
+    try {
+        try {
+            Stop-PlayerInternal
+        } catch {
+            Write-Log "Could not stop previous media before playback" "WARN" $_
+        }
+
+        Open-PlayerUrlInternal $playbackSource
         $script:State.CurrentSong = $Song
         $script:State.IsPlaying = $true
         $script:State.StatusMessage = "Now playing"
 
         Add-ToHistory $Song
+        Write-Log "Playback handed to $($script:State.PlayerBackend): source=$playbackSource, itag=$($stream.itag), mime=$($stream.mimeType)"
+
+        Start-Sleep -Milliseconds 250
+        try {
+            $playState = Get-PlaybackState
+            Write-Log "$($script:State.PlayerBackend) state after play(): $playState"
+
+            if ($script:State.PlayerBackend -eq "WMP" -and $script:State.Player.error -and $script:State.Player.error.errorCount -gt 0) {
+                $wmpError = $script:State.Player.error.item(0).errorDescription
+                $script:State.StatusMessage = "Player error: $wmpError"
+                Write-Log "Windows Media Player reported error: $wmpError" "ERROR"
+                return $false
+            }
+        } catch {
+            Write-Log "Could not inspect Windows Media Player state after play" "WARN" $_
+        }
 
         return $true
     } catch {
         $script:State.StatusMessage = "Playback error: $($_.Exception.Message)"
+        Write-Log "Playback failed after stream resolution" "ERROR" $_
         return $false
     }
 }
 
 function Stop-Playback {
     if ($script:State.Player) {
-        $script:State.Player.controls.stop()
+        try {
+            Stop-PlayerInternal
+        } catch {
+            Write-Log "Failed to stop playback" "WARN" $_
+        }
     }
     $script:State.IsPlaying = $false
 }
@@ -903,11 +1357,11 @@ function Toggle-PlayPause {
     if (-not $script:State.CurrentSong) { return }
 
     if ($script:State.IsPlaying) {
-        $script:State.Player.controls.pause()
+        Pause-PlayerInternal
         $script:State.IsPlaying = $false
         $script:State.StatusMessage = "Paused"
     } else {
-        $script:State.Player.controls.play()
+        Play-PlayerInternal
         $script:State.IsPlaying = $true
         $script:State.StatusMessage = "Playing"
     }
@@ -919,16 +1373,16 @@ function Seek-Position {
     if (-not $script:State.Player) { return }
     if (-not $script:State.CurrentSong) { return }
 
-    $current = $script:State.Player.controls.currentPosition
+    $current = Get-PlayerPositionInternal
     $duration = $script:State.CurrentSong.duration
-    if ($duration -le 0 -and $script:State.Player.currentMedia) {
-        $duration = $script:State.Player.currentMedia.duration
+    if ($duration -le 0) {
+        $duration = Get-PlayerDurationInternal
     }
 
     $newPos = $current + $Seconds
     $newPos = [math]::Max(0, [math]::Min($newPos, $duration - 1))
 
-    $script:State.Player.controls.currentPosition = $newPos
+    Set-PlayerPositionInternal $newPos
 }
 
 function Set-Volume {
@@ -937,7 +1391,7 @@ function Set-Volume {
     $script:State.Volume = [math]::Max(0, [math]::Min(100, $script:State.Volume + $Delta))
 
     if ($script:State.Player) {
-        $script:State.Player.settings.volume = $script:State.Volume
+        Set-PlayerVolumeInternal $script:State.Volume
     }
 
     $script:Settings.volume = $script:State.Volume
@@ -947,7 +1401,7 @@ function Set-Volume {
 function Get-PlaybackPosition {
     if (-not $script:State.Player) { return 0 }
     try {
-        return $script:State.Player.controls.currentPosition
+        return Get-PlayerPositionInternal
     } catch {
         return 0
     }
@@ -956,6 +1410,12 @@ function Get-PlaybackPosition {
 function Get-PlaybackState {
     if (-not $script:State.Player) { return "stopped" }
     try {
+        if ($script:State.PlayerBackend -eq "WPF") {
+            if (-not $script:State.CurrentSong) { return "stopped" }
+            if ($script:State.IsPlaying) { return "playing" }
+            return "paused"
+        }
+
         $state = $script:State.Player.playState
         switch ($state) {
             1 { return "stopped" }
@@ -971,6 +1431,16 @@ function Get-PlaybackState {
 }
 
 function Check-PlaybackEnd {
+    if ($script:State.PlayerBackend -eq "WPF" -and $script:State.IsPlaying -and $script:State.CurrentSong) {
+        $duration = $script:State.CurrentSong.duration
+        if ($duration -le 0) { $duration = Get-PlayerDurationInternal }
+        $position = Get-PlaybackPosition
+        if ($duration -gt 0 -and $position -ge ($duration - 1)) {
+            Handle-SongEnd
+            return
+        }
+    }
+
     $state = Get-PlaybackState
 
     if ($state -eq "ended" -or ($state -eq "stopped" -and $script:State.IsPlaying)) {
@@ -1107,7 +1577,7 @@ function Skip-Previous {
 
     $position = Get-PlaybackPosition
     if ($position -gt 3) {
-        $script:State.Player.controls.currentPosition = 0
+        Set-PlayerPositionInternal 0
         return
     }
 
@@ -1120,7 +1590,7 @@ function Skip-Previous {
         } elseif ($script:State.RepeatMode -eq "all") {
             $prevIndex = $script:State.ShuffleOrder[-1]
         } else {
-            $script:State.Player.controls.currentPosition = 0
+            Set-PlayerPositionInternal 0
             return
         }
     } else {
@@ -1128,7 +1598,7 @@ function Skip-Previous {
             if ($script:State.RepeatMode -eq "all") {
                 $prevIndex = $script:State.Queue.Count - 1
             } else {
-                $script:State.Player.controls.currentPosition = 0
+                Set-PlayerPositionInternal 0
                 return
             }
         }
@@ -1222,7 +1692,9 @@ function Play-SearchResult {
         Update-ShuffleOrder
     }
 
-    Start-Playback $song
+    if (-not (Start-Playback $song)) {
+        Write-Log "Play-SearchResult failed for index=$Index videoId=$($song.id)" "ERROR"
+    }
 }
 
 #endregion
@@ -1230,23 +1702,30 @@ function Play-SearchResult {
 #region ==================== TUI RENDERING ====================
 
 function Clear-Screen {
-    [Console]::Clear()
-    [Console]::SetCursorPosition(0, 0)
+    try {
+        [Console]::Clear()
+        [Console]::SetCursorPosition(0, 0)
+    } catch {
+        Write-Log "Console clear failed" "WARN" $_
+    }
 }
 
 function Hide-Cursor {
-    [Console]::CursorVisible = $false
+    try { [Console]::CursorVisible = $false } catch { }
 }
 
 function Show-Cursor {
-    [Console]::CursorVisible = $true
+    try { [Console]::CursorVisible = $true } catch { }
 }
 
 function Render-UI {
-    $width = [Math]::Min([Console]::WindowWidth, 80)
-    $height = [Console]::WindowHeight
-
-    [Console]::SetCursorPosition(0, 0)
+    try {
+        $width = [Math]::Max(40, [Math]::Min([Console]::WindowWidth, 80))
+        [Console]::SetCursorPosition(0, 0)
+    } catch {
+        Write-Log "Console cursor reset failed" "WARN" $_
+        return
+    }
 
     switch ($script:State.CurrentView) {
         "player" { Render-PlayerView $width }
@@ -1284,8 +1763,8 @@ function Render-PlayerView {
         $song = $script:State.CurrentSong
         $position = Get-PlaybackPosition
         $duration = $song.duration
-        if ($duration -le 0 -and $script:State.Player.currentMedia) {
-            $duration = $script:State.Player.currentMedia.duration
+        if ($duration -le 0) {
+            $duration = Get-PlayerDurationInternal
         }
 
         $isFav = Is-Favorite $song.id
@@ -1304,7 +1783,7 @@ function Render-PlayerView {
 
         $posStr = Format-Duration ([int]$position)
         $durStr = Format-Duration ([int]$duration)
-        $barWidth = $Width - $posStr.Length - $durStr.Length - 8
+        $barWidth = [Math]::Max(10, $Width - $posStr.Length - $durStr.Length - 8)
         $progressBar = Get-ProgressBar $position $duration $barWidth
 
         Write-Color -NoNewline "  $posStr " DarkGray
@@ -1419,7 +1898,7 @@ function Render-SearchView {
     }
 
     Write-Host ""
-    Write-Color "  [1-0] Play  [Enter] Search  [Esc] Back" DarkGray
+    Write-Color "  [1-0] Play  [Enter] Search / Play first result  [Esc] Back" DarkGray
 }
 
 function Render-QueueView {
@@ -1524,8 +2003,12 @@ function Render-HelpView {
 #region ==================== INPUT HANDLING ====================
 
 function Read-KeyNonBlocking {
-    if ([Console]::KeyAvailable) {
-        return [Console]::ReadKey($true)
+    try {
+        if ([Console]::KeyAvailable) {
+            return [Console]::ReadKey($true)
+        }
+    } catch {
+        Write-Log "Console input read failed" "WARN" $_
     }
     return $null
 }
@@ -1535,10 +2018,10 @@ function Handle-Input {
     if (-not $key) { return }
 
     switch ($script:State.CurrentView) {
-        "player" { Handle-PlayerInput $key }
-        "search" { Handle-SearchInput $key }
-        "queue" { Handle-QueueInput $key }
-        "help" { Handle-HelpInput $key }
+        "player" { return (Handle-PlayerInput $key) }
+        "search" { return (Handle-SearchInput $key) }
+        "queue" { return (Handle-QueueInput $key) }
+        "help" { return (Handle-HelpInput $key) }
     }
 }
 
@@ -1581,11 +2064,14 @@ function Handle-SearchInput {
             $script:State.CurrentView = "player"
         }
         "Enter" {
-            if ($script:State.SearchQuery.Length -gt 0) {
+            if ($script:State.SearchResults.Count -gt 0 -and $script:State.SearchQuery -eq $script:State.LastSearchQuery) {
+                Play-SearchResult 0
+            } elseif ($script:State.SearchQuery.Length -gt 0) {
                 $script:State.IsSearching = $true
                 $script:State.StatusMessage = "Searching..."
                 Render-UI
                 $script:State.SearchResults = Search-Songs $script:State.SearchQuery "songs"
+                $script:State.LastSearchQuery = $script:State.SearchQuery
                 $script:State.IsSearching = $false
                 $script:State.StatusMessage = "Found $($script:State.SearchResults.Count) results"
             }
@@ -1607,7 +2093,7 @@ function Handle-SearchInput {
         "D0" { Play-SearchResult 9 }
         default {
             $char = $key.KeyChar
-            if ($char -and [char]::IsLetterOrDigit($char) -or $char -eq ' ' -or $char -eq '-' -or $char -eq "'") {
+            if ($char -and ([char]::IsLetterOrDigit($char) -or $char -eq ' ' -or $char -eq '-' -or $char -eq "'")) {
                 $script:State.SearchQuery += $char
             }
         }
@@ -1652,8 +2138,9 @@ function Play-Favorites {
         Update-ShuffleOrder
     }
 
-    Start-Playback $script:State.Queue[0]
-    $script:State.StatusMessage = "Playing favorites"
+    if (Start-Playback $script:State.Queue[0]) {
+        $script:State.StatusMessage = "Playing favorites"
+    }
 }
 
 function Play-History {
@@ -1672,8 +2159,9 @@ function Play-History {
         Update-ShuffleOrder
     }
 
-    Start-Playback $script:State.Queue[0]
-    $script:State.StatusMessage = "Playing history"
+    if (Start-Playback $script:State.Queue[0]) {
+        $script:State.StatusMessage = "Playing history"
+    }
 }
 
 #endregion
@@ -1707,7 +2195,7 @@ function Main {
             Start-Playback $script:State.CurrentSong
             if ($script:State.LastPosition -gt 0) {
                 Start-Sleep -Milliseconds 500
-                $script:State.Player.controls.currentPosition = $script:State.LastPosition
+                Set-PlayerPositionInternal $script:State.LastPosition
             }
         }
     }
@@ -1720,6 +2208,7 @@ function Main {
         $script:State.CurrentView = "search"
         $script:State.SearchQuery = $Search
         $script:State.SearchResults = Search-Songs $Search "songs"
+        $script:State.LastSearchQuery = $Search
         if ($script:State.SearchResults.Count -gt 0) {
             Play-SearchResult 0
         }
@@ -1752,6 +2241,25 @@ function Main {
     Write-Color "Thanks for using MetroTube!" Cyan
 }
 
-Main
+try {
+    Main
+} catch {
+    Show-Cursor
+    try { Stop-Playback } catch { }
+    Write-Log "Unhandled crash" "ERROR" $_
+
+    Write-Host ""
+    Write-Host "MetroTube crashed, but the error was saved for diagnosis." -ForegroundColor Red
+    Write-Host "Log file: $($script:Config.LogPath)" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host ($_.Exception.Message) -ForegroundColor Red
+    Write-Host ""
+
+    try {
+        Read-Host "Press Enter to close"
+    } catch { }
+} finally {
+    Show-Cursor
+}
 
 #endregion
