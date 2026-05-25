@@ -60,7 +60,19 @@ Testing YouTube Music API...
 API Test Complete!
 ```
 
-If you see `[FAIL]` messages, the API may be blocked on your network.
+If you see `[FAIL]` messages, run these debug commands to see the actual error:
+
+**Test Search API:**
+```powershell
+$r = Invoke-RestMethod -Uri "https://music.youtube.com/youtubei/v1/search" -Method Post -ContentType "application/json" -Body '{"context":{"client":{"clientName":"WEB_REMIX","clientVersion":"1.20240101.01.00","hl":"en","gl":"US"}},"query":"test"}' -Headers @{"User-Agent"="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"} 2>&1; if($r.GetType().Name -eq "ErrorRecord"){Write-Host "ERROR:" -ForegroundColor Red; $r}else{Write-Host "API OK - Found $($r.contents.tabbedSearchResultsRenderer.tabs[0].tabRenderer.content.sectionListRenderer.contents.Count) sections" -ForegroundColor Green}
+```
+
+**Test Player API:**
+```powershell
+$r = Invoke-RestMethod -Uri "https://music.youtube.com/youtubei/v1/player" -Method Post -ContentType "application/json" -Body '{"context":{"client":{"clientName":"ANDROID_VR","clientVersion":"1.61.48","androidSdkVersion":"32","osName":"Android","osVersion":"12","deviceMake":"Oculus","deviceModel":"Quest 3","hl":"en","gl":"US"}},"videoId":"dQw4w9WgXcQ","contentCheckOk":true,"racyCheckOk":true}' -Headers @{"User-Agent"="com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12; Quest 3) gzip"} 2>&1; if($r.GetType().Name -eq "ErrorRecord"){Write-Host "ERROR:" -ForegroundColor Red; $r}else{Write-Host "Status: $($r.playabilityStatus.status)" -ForegroundColor $(if($r.playabilityStatus.status -eq "OK"){"Green"}else{"Red"}); if($r.playabilityStatus.reason){Write-Host "Reason: $($r.playabilityStatus.reason)"}}
+```
+
+If the API is blocked on your network, you may need a VPN.
 
 ### Running the Script
 
