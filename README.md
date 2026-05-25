@@ -36,6 +36,32 @@ Or run the script directly with bypass:
 powershell -ExecutionPolicy Bypass -File .\MetroTube.ps1
 ```
 
+### Test API Connection
+
+Before using the player, test if the API is accessible from your network:
+
+```powershell
+.\MetroTube.ps1 -Test
+```
+
+You should see output like:
+```
+Testing YouTube Music API...
+
+1. Testing Search API (WEB_REMIX client)...
+   [OK] Search API works!
+   Found approximately 20 results
+
+2. Testing Player API (ANDROID_VR client)...
+   [OK] Player API works!
+   Found 4 audio streams with direct URLs
+   Best quality: itag=251, bitrate=142718bps
+
+API Test Complete!
+```
+
+If you see `[FAIL]` messages, the API may be blocked on your network.
+
 ### Running the Script
 
 ```powershell

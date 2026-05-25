@@ -21,18 +21,28 @@
 param(
     [string]$Search,
     [switch]$Favorites,
-    [switch]$Resume
+    [switch]$Resume,
+    [switch]$Test
 )
 
 #region ==================== CONFIGURATION ====================
 
 $script:Config = @{
     AppName = "MetroTube"
-    Version = "1.0.0"
+    Version = "1.0.1"
     BaseUrl = "https://music.youtube.com/youtubei/v1"
     StoragePath = "$env:APPDATA\MetroTube"
 
-    Client = @{
+    # WEB_REMIX client for search (returns YouTube Music format)
+    WebClient = @{
+        clientName = "WEB_REMIX"
+        clientVersion = "1.20240101.01.00"
+        gl = "US"
+        hl = "en"
+    }
+
+    # ANDROID_VR client for player (returns direct URLs without cipher)
+    PlayerClient = @{
         clientName = "ANDROID_VR"
         clientVersion = "1.61.48"
         deviceMake = "Oculus"
@@ -44,7 +54,8 @@ $script:Config = @{
         hl = "en"
     }
 
-    UserAgent = "com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12; Quest 3) gzip"
+    WebUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    PlayerUserAgent = "com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12; Quest 3) gzip"
 
     ItagPriority = @(251, 140, 250, 249)
 
@@ -329,15 +340,23 @@ function Is-Favorite {
 
 #region ==================== API FUNCTIONS ====================
 
-function Build-Context {
+function Build-WebContext {
     return @{
-        client = $script:Config.Client
+        client = $script:Config.WebClient
         user = @{ lockedSafetyMode = $false }
         request = @{ useSsl = $true; internalExperimentFlags = @() }
     }
 }
 
-function Invoke-InnerTubeRequest {
+function Build-PlayerContext {
+    return @{
+        client = $script:Config.PlayerClient
+        user = @{ lockedSafetyMode = $false }
+        request = @{ useSsl = $true; internalExperimentFlags = @() }
+    }
+}
+
+function Invoke-WebRequest-YTMusic {
     param(
         [string]$Endpoint,
         [hashtable]$Body
@@ -345,17 +364,16 @@ function Invoke-InnerTubeRequest {
 
     $url = "$($script:Config.BaseUrl)/$Endpoint"
 
-    $fullBody = @{ context = Build-Context } + $Body
+    $fullBody = @{ context = Build-WebContext } + $Body
     $jsonBody = $fullBody | ConvertTo-Json -Depth 10 -Compress
 
     $headers = @{
         "Content-Type" = "application/json"
-        "User-Agent" = $script:Config.UserAgent
+        "User-Agent" = $script:Config.WebUserAgent
         "Accept" = "application/json"
         "Accept-Language" = "en-US,en;q=0.9"
-        "X-Goog-Api-Format-Version" = "1"
-        "X-YouTube-Client-Name" = "28"
-        "X-YouTube-Client-Version" = $script:Config.Client.clientVersion
+        "Referer" = "https://music.youtube.com/"
+        "Origin" = "https://music.youtube.com"
     }
 
     try {
@@ -365,6 +383,95 @@ function Invoke-InnerTubeRequest {
         $script:State.StatusMessage = "API Error: $($_.Exception.Message)"
         return $null
     }
+}
+
+function Invoke-PlayerRequest {
+    param(
+        [string]$Endpoint,
+        [hashtable]$Body
+    )
+
+    $url = "$($script:Config.BaseUrl)/$Endpoint"
+
+    $fullBody = @{ context = Build-PlayerContext } + $Body
+    $jsonBody = $fullBody | ConvertTo-Json -Depth 10 -Compress
+
+    $headers = @{
+        "Content-Type" = "application/json"
+        "User-Agent" = $script:Config.PlayerUserAgent
+        "Accept" = "application/json"
+        "Accept-Language" = "en-US,en;q=0.9"
+    }
+
+    try {
+        $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $jsonBody -ContentType "application/json"
+        return $response
+    } catch {
+        $script:State.StatusMessage = "API Error: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Test-API {
+    Write-Host "Testing YouTube Music API..." -ForegroundColor Cyan
+    Write-Host ""
+
+    # Test Search API
+    Write-Host "1. Testing Search API (WEB_REMIX client)..." -ForegroundColor Yellow
+    $searchBody = @{ query = "never gonna give you up" }
+    $searchResponse = Invoke-WebRequest-YTMusic "search" $searchBody
+
+    if ($searchResponse) {
+        $tabs = $searchResponse.contents.tabbedSearchResultsRenderer.tabs
+        if ($tabs) {
+            Write-Host "   [OK] Search API works!" -ForegroundColor Green
+            $contents = $tabs[0].tabRenderer.content.sectionListRenderer.contents
+            $songCount = 0
+            foreach ($section in $contents) {
+                if ($section.musicShelfRenderer) {
+                    $songCount += $section.musicShelfRenderer.contents.Count
+                }
+            }
+            Write-Host "   Found approximately $songCount results" -ForegroundColor Gray
+        } else {
+            Write-Host "   [FAIL] Unexpected response format" -ForegroundColor Red
+        }
+    } else {
+        Write-Host "   [FAIL] Search API failed" -ForegroundColor Red
+    }
+
+    Write-Host ""
+
+    # Test Player API
+    Write-Host "2. Testing Player API (ANDROID_VR client)..." -ForegroundColor Yellow
+    $playerBody = @{
+        videoId = "dQw4w9WgXcQ"
+        contentCheckOk = $true
+        racyCheckOk = $true
+    }
+    $playerResponse = Invoke-PlayerRequest "player" $playerBody
+
+    if ($playerResponse) {
+        if ($playerResponse.playabilityStatus.status -eq "OK") {
+            Write-Host "   [OK] Player API works!" -ForegroundColor Green
+            $formats = $playerResponse.streamingData.adaptiveFormats
+            $audioFormats = $formats | Where-Object { $_.mimeType -match "^audio/" -and $_.url }
+            Write-Host "   Found $($audioFormats.Count) audio streams with direct URLs" -ForegroundColor Gray
+            if ($audioFormats.Count -gt 0) {
+                $best = $audioFormats | Sort-Object -Property bitrate -Descending | Select-Object -First 1
+                Write-Host "   Best quality: itag=$($best.itag), bitrate=$($best.bitrate)bps" -ForegroundColor Gray
+            }
+        } else {
+            Write-Host "   [FAIL] Playback status: $($playerResponse.playabilityStatus.status)" -ForegroundColor Red
+            Write-Host "   Reason: $($playerResponse.playabilityStatus.reason)" -ForegroundColor Red
+        }
+    } else {
+        Write-Host "   [FAIL] Player API failed" -ForegroundColor Red
+    }
+
+    Write-Host ""
+    Write-Host "API Test Complete!" -ForegroundColor Cyan
+    Write-Host ""
 }
 
 function Search-Songs {
@@ -381,7 +488,7 @@ function Search-Songs {
         $body.params = "EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D"
     }
 
-    $response = Invoke-InnerTubeRequest "search" $body
+    $response = Invoke-WebRequest-YTMusic "search" $body
 
     if (-not $response) { return @() }
 
@@ -469,7 +576,7 @@ function Get-SearchSuggestions {
     param([string]$Query)
 
     $body = @{ input = $Query }
-    $response = Invoke-InnerTubeRequest "music/get_search_suggestions" $body
+    $response = Invoke-WebRequest-YTMusic "music/get_search_suggestions" $body
 
     if (-not $response) { return @() }
 
@@ -502,7 +609,7 @@ function Get-StreamUrl {
         racyCheckOk = $true
     }
 
-    $response = Invoke-InnerTubeRequest "player" $body
+    $response = Invoke-PlayerRequest "player" $body
 
     if (-not $response) { return $null }
 
@@ -557,7 +664,7 @@ function Get-Recommendations {
         isAudioOnly = $true
     }
 
-    $response = Invoke-InnerTubeRequest "next" $body
+    $response = Invoke-WebRequest-YTMusic "next" $body
 
     if (-not $response) { return @() }
 
@@ -1470,6 +1577,12 @@ function Play-History {
 #region ==================== MAIN ====================
 
 function Main {
+    # Handle test mode first
+    if ($Test) {
+        Test-API
+        return
+    }
+
     Initialize-Storage
     Load-Settings
     Load-Favorites
