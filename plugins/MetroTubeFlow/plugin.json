@@ -1,0 +1,13 @@
+{
+  "$schema": "https://www.flowlauncher.com/schemas/plugin.schema.json",
+  "ID": "5f7e83e9-f2a8-45df-8d1d-c34c8936e4a2",
+  "ActionKeyword": "mt",
+  "Name": "MetroTube Flow",
+  "Description": "Search YouTube Music and control a lightweight local streaming player.",
+  "Author": "Metrolist",
+  "Version": "0.1.0",
+  "Language": "python",
+  "Website": "https://github.com/heyadrsh/metro-cli",
+  "IcoPath": "Images\\app.svg",
+  "ExecuteFileName": "main.py"
+}
