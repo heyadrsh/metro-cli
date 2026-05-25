@@ -22,6 +22,22 @@ A terminal-based YouTube Music player for Windows. Zero dependencies - just Powe
 
 ## Usage
 
+### First Time Setup (Required)
+
+Windows blocks PowerShell scripts by default. Run this first:
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process
+```
+
+Or run the script directly with bypass:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\MetroTube.ps1
+```
+
+### Running the Script
+
 ```powershell
 # Run it
 .\MetroTube.ps1
