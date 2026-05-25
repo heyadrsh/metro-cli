@@ -29,7 +29,7 @@ param(
 
 $script:Config = @{
     AppName = "MetroTube"
-    Version = "1.0.1"
+    Version = "1.0.2"
     BaseUrl = "https://music.youtube.com/youtubei/v1"
     StoragePath = "$env:APPDATA\MetroTube"
 
@@ -49,13 +49,13 @@ $script:Config = @{
         deviceModel = "Quest 3"
         osName = "Android"
         osVersion = "12"
-        platform = "MOBILE"
+        androidSdkVersion = "32"
         gl = "US"
         hl = "en"
     }
 
     WebUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    PlayerUserAgent = "com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12; Quest 3) gzip"
+    PlayerUserAgent = "com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12; en_US; Quest 3; Build/SQ3A.220605.009.A1; Cronet/132.0.6808.3)"
 
     ItagPriority = @(251, 140, 250, 249)
 
@@ -444,6 +444,7 @@ function Test-API {
 
     # Test Player API
     Write-Host "2. Testing Player API (ANDROID_VR client)..." -ForegroundColor Yellow
+    Write-Host "   Video: Rick Astley - Never Gonna Give You Up" -ForegroundColor Gray
     $playerBody = @{
         videoId = "dQw4w9WgXcQ"
         contentCheckOk = $true
