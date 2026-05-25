@@ -36,7 +36,7 @@ try {
 
 $script:Config = @{
     AppName = "MetroTube"
-    Version = "1.0.5"
+    Version = "1.0.6"
     BaseUrl = "https://music.youtube.com/youtubei/v1"
     StoragePath = "$env:APPDATA\MetroTube"
 
@@ -48,21 +48,55 @@ $script:Config = @{
         hl = "en"
     }
 
-    # ANDROID_VR client for player (returns direct URLs without cipher)
-    PlayerClient = @{
-        clientName = "ANDROID_VR"
-        clientVersion = "1.61.48"
-        deviceMake = "Oculus"
-        deviceModel = "Quest 3"
-        osName = "Android"
-        osVersion = "12"
-        androidSdkVersion = "32"
-        gl = "US"
-        hl = "en"
-    }
+    # Multiple player clients for fallback (like Metrolist does)
+    PlayerClients = @(
+        @{
+            name = "TVHTML5_EMBEDDED"
+            clientName = "TVHTML5_SIMPLY_EMBEDDED_PLAYER"
+            clientVersion = "2.0"
+            gl = "US"
+            hl = "en"
+            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+        },
+        @{
+            name = "ANDROID_VR"
+            clientName = "ANDROID_VR"
+            clientVersion = "1.61.48"
+            deviceMake = "Oculus"
+            deviceModel = "Quest 3"
+            osName = "Android"
+            osVersion = "12"
+            androidSdkVersion = "32"
+            gl = "US"
+            hl = "en"
+            userAgent = "com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12; Quest 3) gzip"
+        },
+        @{
+            name = "IOS"
+            clientName = "IOS"
+            clientVersion = "19.29.1"
+            deviceMake = "Apple"
+            deviceModel = "iPhone16,2"
+            osName = "iOS"
+            osVersion = "17.5.1.21F90"
+            gl = "US"
+            hl = "en"
+            userAgent = "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X)"
+        },
+        @{
+            name = "ANDROID_MUSIC"
+            clientName = "ANDROID_MUSIC"
+            clientVersion = "7.27.52"
+            androidSdkVersion = "30"
+            osName = "Android"
+            osVersion = "11"
+            gl = "US"
+            hl = "en"
+            userAgent = "com.google.android.apps.youtube.music/7.27.52 (Linux; U; Android 11) gzip"
+        }
+    )
 
     WebUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    PlayerUserAgent = "com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12; en_US; Quest 3; Build/SQ3A.220605.009.A1; Cronet/132.0.6808.3)"
 
     ItagPriority = @(251, 140, 250, 249)
 
@@ -85,6 +119,7 @@ $script:State = @{
     StatusMessage = ""
     Player = $null
     LastPosition = 0
+    VisitorData = $null
 }
 
 $script:Settings = @{
@@ -611,56 +646,100 @@ function Get-SearchSuggestions {
 function Get-StreamUrl {
     param([string]$VideoId)
 
-    $body = @{
-        videoId = $VideoId
-        contentCheckOk = $true
-        racyCheckOk = $true
-    }
-
-    $response = Invoke-PlayerRequest "player" $body
-
-    if (-not $response) { return $null }
-
-    if ($response.playabilityStatus.status -ne "OK") {
-        $reason = $response.playabilityStatus.reason
-        if (-not $reason) { $reason = "Playback not allowed" }
-        $script:State.StatusMessage = "Error: $reason"
-        return $null
-    }
-
-    $formats = $response.streamingData.adaptiveFormats
-    if (-not $formats) {
-        $script:State.StatusMessage = "No audio formats available"
-        return $null
-    }
-
-    $audioFormats = $formats | Where-Object {
-        $_.mimeType -match "^audio/" -and $_.url
-    }
-
-    foreach ($itag in $script:Config.ItagPriority) {
-        $format = $audioFormats | Where-Object { $_.itag -eq $itag } | Select-Object -First 1
-        if ($format -and $format.url) {
-            return @{
-                url = $format.url
-                itag = $format.itag
-                bitrate = $format.bitrate
-                mimeType = $format.mimeType
+    # Try each player client in order (fallback like Metrolist)
+    foreach ($client in $script:Config.PlayerClients) {
+        $clientContext = @{
+            client = @{
+                clientName = $client.clientName
+                clientVersion = $client.clientVersion
+                gl = $client.gl
+                hl = $client.hl
             }
+            user = @{ lockedSafetyMode = $false }
+            request = @{ useSsl = $true; internalExperimentFlags = @() }
+        }
+
+        # Add optional client properties
+        if ($client.deviceMake) { $clientContext.client.deviceMake = $client.deviceMake }
+        if ($client.deviceModel) { $clientContext.client.deviceModel = $client.deviceModel }
+        if ($client.osName) { $clientContext.client.osName = $client.osName }
+        if ($client.osVersion) { $clientContext.client.osVersion = $client.osVersion }
+        if ($client.androidSdkVersion) { $clientContext.client.androidSdkVersion = $client.androidSdkVersion }
+
+        # Add visitorData if we have it
+        if ($script:State.VisitorData) {
+            $clientContext.client.visitorData = $script:State.VisitorData
+        }
+
+        $body = @{
+            context = $clientContext
+            videoId = $VideoId
+            contentCheckOk = $true
+            racyCheckOk = $true
+        }
+
+        $jsonBody = $body | ConvertTo-Json -Depth 10 -Compress
+        $url = "$($script:Config.BaseUrl)/player"
+
+        $headers = @{
+            "Content-Type" = "application/json"
+            "User-Agent" = $client.userAgent
+            "Accept" = "application/json"
+            "Accept-Language" = "en-US,en;q=0.9"
+        }
+
+        # Add visitorData header if we have it
+        if ($script:State.VisitorData) {
+            $headers["X-Goog-Visitor-Id"] = $script:State.VisitorData
+        }
+
+        try {
+            $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $jsonBody -ContentType "application/json"
+
+            # Store visitorData from response for future requests
+            if ($response.responseContext.visitorData -and -not $script:State.VisitorData) {
+                $script:State.VisitorData = $response.responseContext.visitorData
+            }
+
+            if ($response.playabilityStatus.status -eq "OK") {
+                $formats = $response.streamingData.adaptiveFormats
+                if ($formats) {
+                    $audioFormats = $formats | Where-Object {
+                        $_.mimeType -match "^audio/" -and $_.url
+                    }
+
+                    foreach ($itag in $script:Config.ItagPriority) {
+                        $format = $audioFormats | Where-Object { $_.itag -eq $itag } | Select-Object -First 1
+                        if ($format -and $format.url) {
+                            $script:State.StatusMessage = "Playing via $($client.name)"
+                            return @{
+                                url = $format.url
+                                itag = $format.itag
+                                bitrate = $format.bitrate
+                                mimeType = $format.mimeType
+                            }
+                        }
+                    }
+
+                    $bestFormat = $audioFormats | Sort-Object -Property bitrate -Descending | Select-Object -First 1
+                    if ($bestFormat -and $bestFormat.url) {
+                        $script:State.StatusMessage = "Playing via $($client.name)"
+                        return @{
+                            url = $bestFormat.url
+                            itag = $bestFormat.itag
+                            bitrate = $bestFormat.bitrate
+                            mimeType = $bestFormat.mimeType
+                        }
+                    }
+                }
+            }
+            # If status not OK, continue to next client
+        } catch {
+            # Continue to next client on error
         }
     }
 
-    $bestFormat = $audioFormats | Sort-Object -Property bitrate -Descending | Select-Object -First 1
-    if ($bestFormat -and $bestFormat.url) {
-        return @{
-            url = $bestFormat.url
-            itag = $bestFormat.itag
-            bitrate = $bestFormat.bitrate
-            mimeType = $bestFormat.mimeType
-        }
-    }
-
-    $script:State.StatusMessage = "No playable audio stream found"
+    $script:State.StatusMessage = "Error: All player clients failed"
     return $null
 }
 
