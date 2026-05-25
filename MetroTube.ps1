@@ -25,11 +25,18 @@ param(
     [switch]$Test
 )
 
+#region ==================== PROXY FIX ====================
+# Auto-configure proxy to use Windows credentials (fixes 407 errors behind corporate proxies)
+try {
+    [System.Net.WebRequest]::DefaultWebProxy.Credentials = [System.Net.CredentialCache]::DefaultNetworkCredentials
+} catch { }
+#endregion
+
 #region ==================== CONFIGURATION ====================
 
 $script:Config = @{
     AppName = "MetroTube"
-    Version = "1.0.4"
+    Version = "1.0.5"
     BaseUrl = "https://music.youtube.com/youtubei/v1"
     StoragePath = "$env:APPDATA\MetroTube"
 
