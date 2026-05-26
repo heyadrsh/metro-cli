@@ -1,0 +1,26 @@
+# Cell 1: Install huggingface_hub
+!pip install -q huggingface_hub
+
+# Cell 2: Download all 3 parts of Qwen2.5-Coder-32B Q4_K_M (Total: ~18.5 GB)
+from huggingface_hub import hf_hub_download
+
+files = [
+    "qwen2.5-coder-32b-instruct-q4_k_m-00001-of-00003.gguf",
+    "qwen2.5-coder-32b-instruct-q4_k_m-00002-of-00003.gguf",
+    "qwen2.5-coder-32b-instruct-q4_k_m-00003-of-00003.gguf",
+]
+
+for f in files:
+    print(f"⬇️ Downloading {f}...")
+    hf_hub_download(
+        repo_id="Qwen/Qwen2.5-Coder-32B-Instruct-GGUF",
+        filename=f,
+        local_dir="/kaggle/working/",
+        resume_download=True
+    )
+    print(f"✅ {f} done\n")
+
+print("🎉 All 3 parts downloaded!")
+
+# Cell 3: Verify
+!ls -lh /kaggle/working/*.gguf
